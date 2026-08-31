@@ -11,6 +11,7 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.25/jspdf.plugin.autotable.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/JsBarcode/3.11.5/JsBarcode.all.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.0/FileSaver.min.js"></script>
     <style>
@@ -588,6 +589,7 @@ hr { border: 0; border-top: 1px solid var(--border-color); margin: 2rem 0; }
                 <li data-role="admin"><a href="#" data-tab="user-management"><i class="fas fa-users-cog"></i> User Management</a></li>
                 <li data-role="admin"><a href="#" data-tab="expenses-inventory"><i class="fas fa-dolly"></i> Expenses & Inventory</a></li>
                 <li data-role="admin"><a href="#" data-tab="financial-reports"><i class="fas fa-calculator"></i> Financial Reports</a></li>
+                <li data-role="admin"><a href="#" data-tab="activity-log"><i class="fas fa-clipboard-list"></i> Activity Log</a></li>
             </ul>
             <div class="sidebar-footer">
                  <button id="logout-button" class="btn btn-danger"><i class="fas fa-sign-out-alt"></i> Logout (<span id="logged-in-user-display"></span>)</button>
@@ -823,8 +825,8 @@ hr { border: 0; border-top: 1px solid var(--border-color); margin: 2rem 0; }
                             <label for="report-type-monthly">Monthly</label>
                         </div>
                         <div class="form-group" id="daily-report-group">
-                            <label for="report-date">Select Date:</label>
-                            <input type="date" id="report-date">
+                            <label for="financial-report-date">Select Date:</label>
+                            <input type="date" id="financial-report-date">
                         </div>
                         <div class="form-group" id="monthly-report-group" style="display: none;">
                              <label for="report-month">Select Month:</label>
@@ -848,6 +850,22 @@ hr { border: 0; border-top: 1px solid var(--border-color); margin: 2rem 0; }
                     <div class="card">
                         <h5>Expenses Incurred (<span id="report-total-expenses-count">0</span>)</h5>
                         <div class="table-responsive"><table id="report-expenses-table" class="data-table"><thead><tr><th>Date</th><th>Category</th><th>Amount</th><th>Description</th></tr></thead><tbody></tbody></table></div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="activity-log" class="tab-content">
+                <div class="header"><h3><i class="fas fa-clipboard-list"></i> Activity Log</h3></div>
+                <div class="card">
+                    <div class="record-actions">
+                        <input type="text" id="activity-log-search" placeholder="Search by user, action, or details...">
+                    </div>
+                    <p style="margin: 1rem 0; color: var(--secondary-color); font-size: 0.9rem;">Showing the most recent 200 entries (up to 500 are kept in total).</p>
+                    <div class="table-responsive">
+                        <table id="activity-log-table" class="data-table">
+                            <thead><tr><th>Time</th><th>User</th><th>Action</th><th>Details</th></tr></thead>
+                            <tbody></tbody>
+                        </table>
                     </div>
                 </div>
             </div>
@@ -1096,11 +1114,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         recentActivitiesList: document.getElementById('recent-activities'),
         topTestsList: document.getElementById('top-tests-list'),
         topDoctorsList: document.getElementById('top-doctors-list'),
+        activityLogTable: document.getElementById('activity-log-table').querySelector('tbody'),
+        activityLogSearchInput: document.getElementById('activity-log-search'),
         reportTypeDaily: document.getElementById('report-type-daily'),
         reportTypeMonthly: document.getElementById('report-type-monthly'),
         dailyReportGroup: document.getElementById('daily-report-group'),
         monthlyReportGroup: document.getElementById('monthly-report-group'),
-        reportDateInput: document.getElementById('report-date'),
+        financialReportDateInput: document.getElementById('financial-report-date'),
         reportMonthInput: document.getElementById('report-month'),
         generateFinancialReportBtn: document.getElementById('generate-financial-report'),
         exportFinancialReportExcelBtn: document.getElementById('export-financial-report-excel'),
@@ -1141,6 +1161,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         doctors: [],
         expenses: [],
         inventory: [],
+        activityLog: [],
     };
 
     let currentUser = null; // { username, role } - set on login, cleared on logout
@@ -1151,6 +1172,43 @@ document.addEventListener('DOMContentLoaded', async () => {
             li.style.display = isAdmin ? '' : 'none';
         });
     }
+
+    // --- Activity Log ---
+    // Records who did what and when, across the app. Kept to the most recent
+    // 500 entries so it doesn't grow localStorage without bound.
+    function logActivity(action, details) {
+        db.activityLog = db.activityLog || [];
+        db.activityLog.push({
+            timestamp: new Date().toISOString(),
+            user: (currentUser && currentUser.username) || 'system',
+            action, details
+        });
+        if (db.activityLog.length > 500) db.activityLog = db.activityLog.slice(-500);
+        saveData('ActivityLog', db.activityLog);
+    }
+
+    function renderActivityLog(filterText = '') {
+        if (!el.activityLogTable) return;
+        el.activityLogTable.innerHTML = '';
+        const entries = (db.activityLog || []).slice().reverse().filter(entry =>
+            entry.action.toLowerCase().includes(filterText.toLowerCase()) ||
+            entry.details.toLowerCase().includes(filterText.toLowerCase()) ||
+            entry.user.toLowerCase().includes(filterText.toLowerCase())
+        ).slice(0, 200);
+        if (entries.length === 0) {
+            el.activityLogTable.innerHTML = '<tr><td colspan="4" style="text-align:center;">No activity recorded yet.</td></tr>';
+            return;
+        }
+        entries.forEach(entry => {
+            const row = el.activityLogTable.insertRow();
+            const dt = new Date(entry.timestamp);
+            row.insertCell().textContent = dt.toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' });
+            row.insertCell().textContent = entry.user;
+            row.insertCell().textContent = entry.action;
+            row.insertCell().textContent = entry.details;
+        });
+    }
+
 
     // --- Utility Functions ---
     function generateId(prefix) {
@@ -1204,6 +1262,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             doctors: db.doctors,
             expenses: db.expenses,
             inventory: db.inventory,
+            activityLog: db.activityLog,
         };
         const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
         const dateStr = new Date().toISOString().slice(0, 10);
@@ -1222,6 +1281,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (backup.doctors) saveData('Doctors', backup.doctors);
                 if (backup.expenses) saveData('Expenses', backup.expenses);
                 if (backup.inventory) saveData('Inventory', backup.inventory);
+                if (backup.activityLog) saveData('ActivityLog', backup.activityLog);
                 alert('Backup restored successfully. The app will now reload.');
                 location.reload();
             } catch (err) {
@@ -1238,6 +1298,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         db.doctors = loadData('Doctors');
         db.expenses = loadData('Expenses');
         db.inventory = loadData('Inventory');
+        db.activityLog = loadData('ActivityLog');
 
         // --- Data migration: backfill new fields on records saved before they existed ---
         let migrated = false;
@@ -1267,6 +1328,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         populateDoctorsDropdown();
         populatePatientReportSelector();
         applyRoleRestrictions();
+        renderActivityLog();
     }
 
     function showTab(tabId) {
@@ -1597,12 +1659,56 @@ document.addEventListener('DOMContentLoaded', async () => {
         window.open(doc.output('bloburl'), '_blank');
     }
 
+    // --- Sample/Tube ID Label ---
+    // Opens a small print-ready label (50mm x 25mm, standard sticker size) with the
+    // patient's name, ID, age/gender, collection date, and a scannable barcode of
+    // their patient ID - meant to be printed onto sticker sheets for tube labeling.
+    function printSampleLabel(patientId) {
+        const patient = db.patients.find(p => p.id === patientId);
+        if (!patient) return;
+        const testCount = patient.investigations.length;
+        const labelWindow = window.open('', '_blank', 'width=420,height=320');
+        if (!labelWindow) return alert('Please allow pop-ups for this site to print sample labels.');
+        labelWindow.document.write(`<!DOCTYPE html>
+<html>
+<head>
+<title>Sample Label - ${patient.id}</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/JsBarcode/3.11.5/JsBarcode.all.min.js"><\/script>
+<style>
+    @page { size: 50mm 25mm; margin: 0; }
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 1.5mm 2mm; font-family: Arial, Helvetica, sans-serif; width: 50mm; height: 25mm; overflow: hidden; }
+    .lbl-top { display: flex; justify-content: space-between; align-items: baseline; }
+    .lbl-name { font-size: 8.5px; font-weight: bold; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 32mm; }
+    .lbl-age { font-size: 7px; }
+    .lbl-meta { font-size: 6.5px; margin-top: 0.5mm; white-space: nowrap; overflow: hidden; }
+    svg { width: 100%; height: 11mm; margin-top: 0.5mm; }
+</style>
+</head>
+<body>
+    <div class="lbl-top">
+        <span class="lbl-name">${patient.name}</span>
+        <span class="lbl-age">${patient.age}${(patient.gender || '?')[0]}</span>
+    </div>
+    <div class="lbl-meta">${formatDate(patient.collectionDate)} | ${testCount} test${testCount !== 1 ? 's' : ''}</div>
+    <svg id="barcode"></svg>
+    <script>
+        JsBarcode("#barcode", "${patient.id}", { format: "CODE128", displayValue: true, fontSize: 9, height: 22, margin: 0 });
+        window.onload = () => { setTimeout(() => window.print(), 300); };
+    <\/script>
+</body>
+</html>`);
+        labelWindow.document.close();
+    }
+
 
     // --- Patient Records ---
     function deletePatient(patientId) {
         if (confirm(`Are you sure you want to delete patient record ${patientId}? This action cannot be undone.`)) {
+            const patient = db.patients.find(p => p.id === patientId);
             db.patients = db.patients.filter(p => p.id !== patientId);
             saveData('Patients', db.patients);
+            logActivity('Delete Patient', `Deleted patient ${patientId}${patient ? ' - ' + patient.name : ''}`);
             loadAllData();
             alert(`Patient ${patientId} has been deleted.`);
         }
@@ -1646,6 +1752,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             renderPatientRecords(el.patientSearchInput.value);
             renderPendingPayments();
             updateDashboard();
+            logActivity('Record Payment', `₹${amount.toFixed(2)} (${mode}) from ${patient.name} (ID: ${patient.id})`);
             alert(`Payment of ₹${amount.toFixed(2)} recorded for ${patient.name}.`);
         } else if (modalContext.type === 'doctorPayout') {
             const doctor = db.doctors.find(d => d.id === modalContext.id);
@@ -1654,6 +1761,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             doctor.commissionPayouts.push({ date: new Date().toLocaleDateString('en-CA'), amount });
             saveData('Doctors', db.doctors);
             renderDoctorManagement();
+            logActivity('Commission Payout', `₹${amount.toFixed(2)} paid to Dr. ${doctor.name}`);
             alert(`Commission payout of ₹${amount.toFixed(2)} recorded for Dr. ${doctor.name}.`);
         }
         closeAppModal();
@@ -1690,10 +1798,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             statusSelect.style.color = statusColors[patient.reportStatus || 'Pending'];
             statusSelect.style.fontWeight = '600';
             statusSelect.addEventListener('change', () => {
+                const oldStatus = patient.reportStatus;
                 patient.reportStatus = statusSelect.value;
                 statusSelect.style.color = statusColors[statusSelect.value];
                 saveData('Patients', db.patients);
                 updateDashboard();
+                logActivity('Report Status Change', `${patient.name} (ID: ${patient.id}): ${oldStatus} → ${statusSelect.value}`);
             });
             statusCell.appendChild(statusSelect);
             row.insertCell().textContent = formatDate(patient.registrationDate);
@@ -1721,6 +1831,13 @@ document.addEventListener('DOMContentLoaded', async () => {
             invoiceBtn.title = 'View & Print Bill';
             invoiceBtn.addEventListener('click', () => generateInvoice(patient));
             actionsCell.appendChild(invoiceBtn);
+            const labelBtn = document.createElement('button');
+            labelBtn.innerHTML = '<i class="fas fa-tag"></i> Label';
+            labelBtn.classList.add('btn', 'btn-info', 'btn-sm');
+            labelBtn.style.marginLeft = '4px';
+            labelBtn.title = 'Print Sample/Tube ID Label';
+            labelBtn.addEventListener('click', () => printSampleLabel(patient.id));
+            actionsCell.appendChild(labelBtn);
             const whatsappBtn = document.createElement('button');
             whatsappBtn.innerHTML = '<i class="fab fa-whatsapp"></i>';
             whatsappBtn.classList.add('btn', 'btn-whatsapp', 'btn-sm');
@@ -2007,6 +2124,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (confirm(`Are you sure you want to delete the test "${testName}"?`)) {
             db.tests = db.tests.filter(t => t.name !== testName);
             saveData('Tests', db.tests);
+            logActivity('Delete Test', `Deleted test "${testName}"`);
             renderTestManagement();
         }
     }
@@ -2119,8 +2237,10 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     function deleteDoctor(doctorId) {
         if (confirm("Are you sure you want to delete this doctor record?")) {
+            const doctor = db.doctors.find(d => d.id === doctorId);
             db.doctors = db.doctors.filter(d => d.id !== doctorId);
             saveData('Doctors', db.doctors);
+            logActivity('Delete Doctor', `Deleted doctor ${doctorId}${doctor ? ' - Dr. ' + doctor.name : ''}`);
             renderDoctorManagement();
         }
     }
@@ -2180,6 +2300,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (confirm(`Are you sure you want to delete user "${username}"?`)) {
             db.users = db.users.filter(u => u.username !== username);
             saveData('Users', db.users);
+            logActivity('Delete User', `Deleted user "${username}"`);
             renderUserManagement();
             if (el.loggedInUserDisplay.textContent === username) handleLogout();
         }
@@ -2205,8 +2326,10 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     function deleteExpense(expenseId) {
         if (confirm("Are you sure you want to delete this expense record?")) {
+            const expense = db.expenses.find(e => e.id === expenseId);
             db.expenses = db.expenses.filter(e => e.id !== expenseId);
             saveData('Expenses', db.expenses);
+            logActivity('Delete Expense', expense ? `Deleted expense: ${expense.category} - ₹${expense.amount}` : `Deleted expense ${expenseId}`);
             renderExpenseRecords(); updateDashboard();
         }
     }
@@ -2234,8 +2357,10 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     function deleteInventoryItem(itemId) {
         if (confirm("Are you sure you want to delete this inventory item?")) {
+            const item = db.inventory.find(i => i.id === itemId);
             db.inventory = db.inventory.filter(item => item.id !== itemId);
             saveData('Inventory', db.inventory);
+            logActivity('Delete Inventory Item', item ? `Deleted inventory item: ${item.name}` : `Deleted inventory item ${itemId}`);
             renderInventoryRecords();
         }
     }
@@ -2247,7 +2372,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         const reportType = document.querySelector('input[name="reportType"]:checked').value;
         let displayPeriod, filteredPatients = [], filteredExpenses = [];
         if (reportType === 'daily') {
-            const date = el.reportDateInput.value;
+            const date = el.financialReportDateInput.value;
             if (!date) return alert("Please select a date for the daily report.");
             displayPeriod = formatDate(date);
             filteredPatients = db.patients.filter(p => p.registrationDate === date);
@@ -2335,12 +2460,23 @@ document.addEventListener('DOMContentLoaded', async () => {
             // registration form fields (including amountPaid) get overwritten here.
             patientData.payments = db.patients[existingPatientIndex].payments || [];
             db.patients[existingPatientIndex] = patientData; alert(`Patient ${patientData.name} updated successfully!`);
+            logActivity('Update Patient', `Updated patient ${patientData.id} - ${patientData.name}`);
         } else {
+            // Duplicate phone-number warning: this catches accidental re-registration of the
+            // same patient, but a shared phone (e.g. a family) is a legitimate case too, so it
+            // only warns - it never blocks registration outright.
+            const duplicates = db.patients.filter(p => p.phone === patientData.phone);
+            if (duplicates.length > 0) {
+                const list = duplicates.map(p => `- ${p.name} (ID: ${p.id}, registered ${formatDate(p.registrationDate)})`).join('\n');
+                if (!confirm(`A patient with this phone number already exists:\n${list}\n\nContinue registering this as a new/separate patient?`)) return;
+            }
             patientData.payments = patientData.amountPaid > 0 ? [{ date: patientData.registrationDate, amount: patientData.amountPaid, mode: patientData.paymentMode }] : [];
             db.patients.push(patientData); alert(`Patient ${patientData.name} registered successfully!\nID: ${patientData.id}`);
+            logActivity('Register Patient', `Registered patient ${patientData.id} - ${patientData.name}`);
         }
         saveData('Patients', db.patients);
         if (confirm("Do you want to view & print the bill now?")) generateInvoice(patientData);
+        if (confirm("Do you want to print a sample/tube ID label now?")) printSampleLabel(patientData.id);
         if (confirm("Do you want to send a WhatsApp notification to the patient?")) sendWhatsAppMessage(patientData);
         resetPatientForm(); loadAllData(); showTab('patient-records');
     });
@@ -2362,10 +2498,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (existingIndex > -1) {
                 if (db.tests.some(t => t.name.toLowerCase() === newTestName.toLowerCase() && t.name !== originalTestName)) return alert('A test with this name already exists.');
                 db.tests[existingIndex] = { name: newTestName, mrp: newTestMrp }; alert(`Test "${originalTestName}" updated to "${newTestName}" successfully!`);
+                logActivity('Update Test', `Updated test "${originalTestName}" to "${newTestName}" (₹${newTestMrp})`);
             }
         } else {
             if (db.tests.some(t => t.name.toLowerCase() === newTestName.toLowerCase())) return alert('A test with this name already exists.');
             db.tests.push({ name: newTestName, mrp: newTestMrp }); alert(`Test "${newTestName}" added successfully!`);
+            logActivity('Add Test', `Added test "${newTestName}" (₹${newTestMrp})`);
         }
         saveData('Tests', db.tests); renderTestManagement(); resetTestForm();
     });
@@ -2383,10 +2521,15 @@ document.addEventListener('DOMContentLoaded', async () => {
         };
         const existingIndex = db.doctors.findIndex(d => d.id === doctorData.id);
         if (existingIndex > -1) {
+            // Preserve commission payout history when editing a doctor's details.
+            doctorData.commissionPayouts = db.doctors[existingIndex].commissionPayouts || [];
             db.doctors[existingIndex] = doctorData; alert(`Doctor ${doctorData.name} updated successfully!`);
+            logActivity('Update Doctor', `Updated doctor ${doctorData.id} - Dr. ${doctorData.name}`);
         } else {
             if (db.doctors.some(d => d.name.toLowerCase() === doctorData.name.toLowerCase())) return alert('A doctor with this name already exists.');
+            doctorData.commissionPayouts = [];
             db.doctors.push(doctorData); alert(`Doctor ${doctorData.name} added successfully!`);
+            logActivity('Add Doctor', `Added doctor ${doctorData.id} - Dr. ${doctorData.name} (${doctorData.referralPercentage}% referral)`);
         }
         saveData('Doctors', db.doctors); renderDoctorManagement(); resetDoctorForm();
     });
@@ -2403,11 +2546,13 @@ document.addEventListener('DOMContentLoaded', async () => {
                 db.users[existingIndex].role = newRole;
                 if (newPassword) db.users[existingIndex].password = await hashPassword(newPassword);
                 alert(`User "${originalUsername}" updated to "${newUsername}" successfully!`);
+                logActivity('Update User', `Updated user "${originalUsername}" to "${newUsername}" (role: ${newRole})`);
             }
         } else {
             if (db.users.some(u => u.username.toLowerCase() === newUsername.toLowerCase())) return alert('A user with this username already exists.');
             if (!newPassword) return alert('Password is required for new users.');
             db.users.push({ username: newUsername, password: await hashPassword(newPassword), role: newRole }); alert(`User "${newUsername}" added successfully!`);
+            logActivity('Add User', `Added user "${newUsername}" (role: ${newRole})`);
         }
         saveData('Users', db.users); renderUserManagement(); resetUserForm();
     });
@@ -2423,6 +2568,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     el.appModalSaveBtn.addEventListener('click', handleAppModalSave);
     el.appModalCancelBtn.addEventListener('click', closeAppModal);
     el.appModalOverlay.addEventListener('click', (e) => { if (e.target === el.appModalOverlay) closeAppModal(); });
+    el.activityLogSearchInput.addEventListener('input', (e) => renderActivityLog(e.target.value));
 
     el.expenseForm.addEventListener('submit', (e) => {
         e.preventDefault();
@@ -2431,6 +2577,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             amount: parseFloat(e.target.amount.value), description: e.target.description.value.trim(),
         };
         db.expenses.push(expense); saveData('Expenses', db.expenses); renderExpenseRecords(); updateDashboard();
+        logActivity('Add Expense', `${expense.category} - ₹${expense.amount}${expense.description ? ' - ' + expense.description : ''}`);
         e.target.reset(); e.target.date.valueAsDate = new Date(); alert('Expense added successfully!');
     });
 
@@ -2446,8 +2593,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             db.inventory[existingItemIndex].unit = newItem.unit;
             db.inventory[existingItemIndex].reorderLevel = newItem.reorderLevel;
             alert(`Inventory item "${newItem.name}" updated successfully!`);
+            logActivity('Update Inventory Item', `${newItem.name}: quantity set to ${newItem.quantity} ${newItem.unit}`);
         } else {
             newItem.id = generateId('INV'); db.inventory.push(newItem); alert(`Inventory item "${newItem.name}" added successfully!`);
+            logActivity('Add Inventory Item', `${newItem.name}: ${newItem.quantity} ${newItem.unit}`);
         }
         saveData('Inventory', db.inventory); renderInventoryRecords(); e.target.reset();
     });
@@ -2464,7 +2613,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Initial Load
     loadAllData(); resetPatientForm(); resetDoctorForm(); resetTestForm(); resetUserForm();
-    el.reportDateInput.valueAsDate = new Date();
+    el.financialReportDateInput.valueAsDate = new Date();
     el.reportMonthInput.value = new Date().toISOString().slice(0, 7);
     el.expenseForm.date.valueAsDate = new Date();
     showTab('dashboard');
